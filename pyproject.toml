@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "hkn-pos"
+version = "0.1.0"
+description = "Email monitor & PDF parser for HKN TooCOOL order confirmations"
+requires-python = ">=3.10"
+dependencies = [
+    "imap_tools>=1.7.0",
+    "pdfplumber>=0.11.0",
+    "python-dotenv>=1.0.0",
+    "fastapi>=0.115.0",
+    "uvicorn>=0.34.0",
+    "httpx>=0.28.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+]
+
+[project.scripts]
+hkn-pos = "hkn_pos.main:main"

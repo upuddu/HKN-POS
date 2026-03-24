@@ -1,0 +1,36 @@
+# ─────────────────────────────────────────────────────────────
+# HKN POS — Docker Compose
+#
+# Usage:
+#   cp .env.example .env    # fill in credentials
+#   docker compose up -d    # start
+#   docker compose logs -f  # watch logs
+#   docker compose down     # stop
+# ─────────────────────────────────────────────────────────────
+
+services:
+  hkn-pos:
+    build: .
+    container_name: hkn-pos
+    restart: unless-stopped
+    ports:
+      - "${API_PORT:-8042}:8042"
+    env_file:
+      - .env
+    environment:
+      - DB_PATH=/data/hkn_pos.db
+      - DOWNLOAD_DIR=/app/downloads
+    volumes:
+      # Persist SQLite DB + downloaded PDFs across restarts
+      - hkn_data:/data
+      - hkn_downloads:/app/downloads
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8042/health')"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+volumes:
+  hkn_data:
+  hkn_downloads:

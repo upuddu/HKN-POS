@@ -1,0 +1,257 @@
+#!/usr/bin/env bash
+# ─────────────────────────────────────────────────────────────────
+# hknctl — CLI control tool for HKN POS
+#
+# Usage:
+#   ./hknctl start [-v]     Start the server in the background
+#   ./hknctl stop           Stop the background server
+#   ./hknctl restart [-v]   Restart the server
+#   ./hknctl status         Show server status + unread orders
+#   ./hknctl db             Print all orders in the database
+#   ./hknctl logs [N]       Show last N communication log entries (default 20)
+#   ./hknctl logs --all     Show all log entries
+#   ./hknctl logs --clear   Clear the communication log
+#   ./hknctl parse <file>   Parse a PDF and store the result
+# ─────────────────────────────────────────────────────────────────
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+cd "$SCRIPT_DIR"
+
+PIDFILE="$SCRIPT_DIR/.hkn_pos.pid"
+LOGFILE="$SCRIPT_DIR/hkn_pos.log"
+
+# ── Activate venv if available ────────────────────────────────────
+if [ -f ".venv/bin/activate" ]; then
+    source .venv/bin/activate
+fi
+
+# ── Find the right Python ────────────────────────────────────────
+PYTHON="$(which python 2>/dev/null || which python3 2>/dev/null)"
+
+# ── Helpers ───────────────────────────────────────────────────────
+
+get_pid() {
+    if [ -f "$PIDFILE" ]; then
+        cat "$PIDFILE"
+    fi
+}
+
+is_running() {
+    local pid
+    pid=$(get_pid)
+    if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+        return 0
+    fi
+    return 1
+}
+
+# ── Commands ──────────────────────────────────────────────────────
+
+cmd_start() {
+    if is_running; then
+        echo "⚠️   Server already running (PID $(get_pid))"
+        return
+    fi
+
+    local verbose_flag=""
+    if [[ "${1:-}" == "-v" || "${1:-}" == "--verbose" ]]; then
+        verbose_flag="-v"
+    fi
+
+    echo "🚀  Starting HKN POS server..."
+    nohup $PYTHON -m hkn_pos.main --serve $verbose_flag > "$LOGFILE" 2>&1 &
+    local pid=$!
+    echo "$pid" > "$PIDFILE"
+    sleep 1
+
+    if kill -0 "$pid" 2>/dev/null; then
+        echo "✅  Server started (PID $pid)"
+        echo "    Log: $LOGFILE"
+        echo "    API: http://localhost:${API_PORT:-8042}"
+    else
+        echo "❌  Server failed to start. Check $LOGFILE"
+        rm -f "$PIDFILE"
+        tail -20 "$LOGFILE"
+    fi
+}
+
+cmd_stop() {
+    if ! is_running; then
+        echo "ℹ️   Server is not running"
+        rm -f "$PIDFILE"
+        return
+    fi
+
+    local pid
+    pid=$(get_pid)
+    echo "🛑  Stopping server (PID $pid)..."
+    kill "$pid" 2>/dev/null || true
+    sleep 1
+
+    # Force kill if still alive
+    if kill -0 "$pid" 2>/dev/null; then
+        kill -9 "$pid" 2>/dev/null || true
+        sleep 1
+    fi
+
+    rm -f "$PIDFILE"
+    echo "✅  Server stopped"
+}
+
+cmd_restart() {
+    cmd_stop
+    sleep 1
+    cmd_start "${1:-}"
+}
+
+cmd_status() {
+    if is_running; then
+        local pid
+        pid=$(get_pid)
+        echo "✅  Server is RUNNING (PID $pid)"
+        echo ""
+
+        # Try to hit health endpoint
+        local port="${API_PORT:-8042}"
+        if command -v curl &>/dev/null; then
+            echo "── Health ──"
+            curl -s "http://localhost:$port/health" 2>/dev/null | $PYTHON -m json.tool 2>/dev/null || echo "   (could not reach API)"
+        fi
+    else
+        echo "🔴  Server is NOT running"
+        rm -f "$PIDFILE"
+    fi
+
+    echo ""
+    echo "── Database ──"
+    $PYTHON -c "
+from hkn_pos.config import Config
+from hkn_pos.storage import OrderStore
+from hkn_pos.comm_log import CommLog
+c = Config.from_env()
+s = OrderStore(c.db_path)
+cl = CommLog(c.db_path)
+print(f'  Orders pending:     {s.count()}')
+print(f'  Comm log entries:   {cl.count()}')
+" 2>/dev/null || echo "   (database not initialized)"
+}
+
+cmd_db() {
+    $PYTHON -c "
+import json
+from hkn_pos.config import Config
+from hkn_pos.storage import OrderStore
+c = Config.from_env()
+s = OrderStore(c.db_path)
+orders = s.get_unread()
+if not orders:
+    print('📭  No orders in database')
+else:
+    print(f'📬  {len(orders)} order(s) in database:\n')
+    for o in orders:
+        d = o['data']
+        print(f'  Key:      {o[\"key\"]}')
+        print(f'  Order:    #{d[\"order_number\"]}')
+        print(f'  Customer: {d[\"customer_name\"]} ({d[\"customer_id\"]})')
+        print(f'  Amount:   \${d[\"reload_amount\"]} (total: \${d[\"total\"]})')
+        print(f'  Store:    ({d[\"store_code\"]}) {d[\"store_name\"]}')
+        print(f'  Paid:     {d[\"paid\"]}')
+        print()
+"
+}
+
+cmd_logs() {
+    local arg="${1:-20}"
+
+    if [[ "$arg" == "--all" ]]; then
+        $PYTHON -c "
+import json
+from hkn_pos.config import Config
+from hkn_pos.comm_log import CommLog
+c = Config.from_env()
+cl = CommLog(c.db_path)
+entries = cl.get_all()
+if not entries:
+    print('📭  No communication log entries')
+else:
+    print(f'📋  {len(entries)} log entries:\n')
+    for e in entries:
+        arrow = '→' if e['direction'] == 'OUT' else '←'
+        detail = json.dumps(e['detail'], separators=(',',':')) if e['detail'] else ''
+        if len(detail) > 80:
+            detail = detail[:77] + '...'
+        print(f'  {e[\"timestamp\"]}  {arrow} {e[\"event\"]:20s}  [{e[\"status\"]}]  {detail}')
+"
+    elif [[ "$arg" == "--clear" ]]; then
+        $PYTHON -c "
+from hkn_pos.config import Config
+from hkn_pos.comm_log import CommLog
+c = Config.from_env()
+cl = CommLog(c.db_path)
+n = cl.clear()
+print(f'🗑️   Cleared {n} log entries')
+"
+    else
+        local n="$arg"
+        $PYTHON -c "
+import json
+from hkn_pos.config import Config
+from hkn_pos.comm_log import CommLog
+c = Config.from_env()
+cl = CommLog(c.db_path)
+entries = cl.get_recent($n)
+if not entries:
+    print('📭  No communication log entries')
+else:
+    print(f'📋  Last {len(entries)} log entries:\n')
+    for e in entries:
+        arrow = '→' if e['direction'] == 'OUT' else '←'
+        detail = json.dumps(e['detail'], separators=(',',':')) if e['detail'] else ''
+        if len(detail) > 80:
+            detail = detail[:77] + '...'
+        print(f'  {e[\"timestamp\"]}  {arrow} {e[\"event\"]:20s}  [{e[\"status\"]}]  {detail}')
+"
+    fi
+}
+
+cmd_parse() {
+    local file="${1:-}"
+    if [ -z "$file" ]; then
+        echo "Usage: hknctl parse <pdf-file>"
+        exit 1
+    fi
+    echo "📄  Parsing: $file"
+    $PYTHON -m hkn_pos.main --parse-pdf "$file" --json
+}
+
+# ── Main dispatch ─────────────────────────────────────────────────
+
+case "${1:-help}" in
+    start)   cmd_start "${2:-}" ;;
+    stop)    cmd_stop ;;
+    restart) cmd_restart "${2:-}" ;;
+    status)  cmd_status ;;
+    db)      cmd_db ;;
+    logs)    cmd_logs "${2:-20}" ;;
+    parse)   cmd_parse "${2:-}" ;;
+    help|--help|-h)
+        echo "hknctl — HKN POS control tool"
+        echo ""
+        echo "Usage:"
+        echo "  ./hknctl start [-v]      Start server in background"
+        echo "  ./hknctl stop            Stop the server"
+        echo "  ./hknctl restart [-v]    Restart the server"
+        echo "  ./hknctl status          Server status + DB summary"
+        echo "  ./hknctl db              Print all orders in DB"
+        echo "  ./hknctl logs [N]        Show last N comm log entries (default 20)"
+        echo "  ./hknctl logs --all      Show all log entries"
+        echo "  ./hknctl logs --clear    Clear communication log"
+        echo "  ./hknctl parse <file>    Parse a PDF and store it"
+        ;;
+    *)
+        echo "Unknown command: $1"
+        echo "Run './hknctl help' for usage"
+        exit 1
+        ;;
+esac
