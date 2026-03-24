@@ -1,30 +1,32 @@
-.env
+# Python
 __pycache__/
 *.pyc
 *.pyo
-downloads/
 *.egg-info/
 dist/
 build/
-.pytest_cache/
 .venv/
+.pytest_cache/
 
-# Database
-*.db
-
-# Rust build artifacts
-examples/07_rust_client/target/
-examples/07_rust_client/Cargo.lock
+# Rust
+target/
+Cargo.lock
 
 # Node
 node_modules/
 package-lock.json
 
-# Go
-examples/06_go_client
+# Environment
+.env
 
-# OS files
+# Database
+*.db
+
+# OS
 .DS_Store
 
-# PDFs (order receipts, etc.)
+# Downloads
+downloads/
+
+# Misc
 *.pdf
