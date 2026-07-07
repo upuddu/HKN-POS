@@ -4,6 +4,15 @@ Order processing system for Purdue's Eta Kappa Nu (HKN) chapter. Monitors a shar
 
 Built to replace the manual workflow of checking email, opening PDFs, and copying reload amounts into a spreadsheet. The server watches the inbox in real time using IMAP IDLE (no polling), parses each PDF the moment it arrives, and pushes an interrupt to whatever downstream system needs the data.
 
+## Stack
+
+- **FastAPI** + **Uvicorn** — REST API server
+- **imap_tools** — IMAP IDLE mailbox monitoring
+- **pdfplumber** — PDF text extraction
+- **httpx** — outbound webhook delivery
+- **SQLite** — order and communication-log storage
+- **python-dotenv** — environment-based configuration
+
 ---
 
 ## How It Works
@@ -55,7 +64,6 @@ docker-compose.yml     Production deployment config
 
 - Python 3.10 or later
 - A Purdue (Office 365) email account with an app password
-- That is literally it
 
 ---
 
